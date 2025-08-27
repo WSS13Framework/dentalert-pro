@@ -132,4 +132,4 @@ app.listen(PORT, () => {
     console.log('🦷 DentAlert Pro API iniciado com sucesso!');
 });
 
-module.exports = app;
+module.exports = app;// Force rebuild qua 27 ago 2025 10:08:00 -03
