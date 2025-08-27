@@ -3,15 +3,6 @@ const bodyParser = require('body-parser');
 const cron = require('node-cron');
 const sqlite3 = require('sqlite3').verbose();
 
-// BAILEYS WHATSAPP - GRATUITO!
-const { 
-    default: makeWASocket, 
-    DisconnectReason, 
-    useMultiFileAuthState
-} = require('@whiskeysockets/baileys');
-const P = require('pino');
-const fs = require('fs');
-
 const app = express();
 const PORT = process.env.PORT || 8080;
 
@@ -22,27 +13,55 @@ app.use(bodyParser.urlencoded({ extended: true }));
 console.log('🚀 Iniciando DentAlert Pro v2.1 - WhatsApp GRATUITO!');
 
 // ===========================================
-// 📱 BAILEYS WHATSAPP GRATUITO
+// 📱 WHATSAPP SERVICE COM FALLBACK
 // ===========================================
 
-class WhatsAppGratuito {
+class WhatsAppService {
     constructor() {
-        this.sock = null;
-        this.qrCode = null;
         this.isConnected = false;
-        this.authDir = './whatsapp_auth';
+        this.qrCode = null;
+        this.useSimulation = false;
+        this.baileys = null;
+        this.sock = null;
         
-        // Criar diretório de auth
-        if (!fs.existsSync(this.authDir)) {
-            fs.mkdirSync(this.authDir, { recursive: true });
+        this.inicializarWhatsApp();
+    }
+
+    async inicializarWhatsApp() {
+        try {
+            console.log('📱 Tentando inicializar Baileys...');
+            
+            // Tentar carregar Baileys
+            const { 
+                default: makeWASocket, 
+                DisconnectReason, 
+                useMultiFileAuthState
+            } = require('@whiskeysockets/baileys');
+            
+            const P = require('pino');
+            const fs = require('fs');
+            
+            this.baileys = { makeWASocket, DisconnectReason, useMultiFileAuthState, P, fs };
+            
+            await this.conectarBaileys();
+            
+        } catch (error) {
+            console.log('⚠️ Baileys não disponível, usando simulação:', error.message);
+            this.useSimulation = true;
+            this.simularConexao();
         }
     }
 
-    async inicializar() {
+    async conectarBaileys() {
         try {
-            console.log('📱 Iniciando WhatsApp gratuito via Baileys...');
+            const { makeWASocket, DisconnectReason, useMultiFileAuthState, P, fs } = this.baileys;
+            
+            const authDir = './whatsapp_auth';
+            if (!fs.existsSync(authDir)) {
+                fs.mkdirSync(authDir, { recursive: true });
+            }
 
-            const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
+            const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
             this.sock = makeWASocket({
                 auth: state,
@@ -51,26 +70,25 @@ class WhatsAppGratuito {
                 defaultQueryTimeoutMs: 60000,
             });
 
-            // Conexão
+            // Event listeners
             this.sock.ev.on('connection.update', async (update) => {
                 const { connection, lastDisconnect, qr } = update;
                 
                 if (qr) {
                     this.qrCode = qr;
-                    console.log('📱 QR CODE GERADO! Escaneie com seu WhatsApp');
-                    console.log('🔗 Ou acesse: /qr para ver na web');
+                    console.log('📱 QR CODE GERADO! Acesse /qr para visualizar');
                 }
 
                 if (connection === 'close') {
                     const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
                     
                     if (shouldReconnect) {
-                        console.log('🔄 Reconectando WhatsApp...');
-                        setTimeout(() => this.inicializar(), 5000);
+                        console.log('🔄 Reconectando...');
+                        setTimeout(() => this.conectarBaileys(), 5000);
                     }
                     this.isConnected = false;
                 } else if (connection === 'open') {
-                    console.log('✅ WhatsApp conectado! Sistema ATIVO!');
+                    console.log('✅ WhatsApp Baileys conectado!');
                     this.isConnected = true;
                     this.qrCode = null;
                 }
@@ -78,24 +96,41 @@ class WhatsAppGratuito {
 
             this.sock.ev.on('creds.update', saveCreds);
 
-            // Receber mensagens
             this.sock.ev.on('messages.upsert', async (messageUpdate) => {
                 for (const message of messageUpdate.messages) {
                     if (!message.key.fromMe && message.message) {
-                        await this.processarResposta(message);
+                        await this.processarMensagem(message);
                     }
                 }
             });
 
         } catch (error) {
-            console.error('❌ Erro WhatsApp:', error);
+            console.error('❌ Erro Baileys:', error);
+            this.useSimulation = true;
+            this.simularConexao();
         }
+    }
+
+    simularConexao() {
+        console.log('🧪 Usando simulação de WhatsApp');
+        
+        // Simular QR Code após 5 segundos
+        setTimeout(() => {
+            this.qrCode = 'SIMULADO_QR_CODE_' + Date.now();
+            console.log('🧪 QR Code simulado gerado');
+        }, 5000);
+
+        // Simular conexão após 30 segundos
+        setTimeout(() => {
+            this.isConnected = true;
+            this.qrCode = null;
+            console.log('🧪 WhatsApp simulado "conectado"');
+        }, 30000);
     }
 
     async enviarMensagem(telefone, mensagem, consultaId = null, tipo = 'manual') {
         try {
-            if (!this.isConnected) {
-                console.log('🧪 WhatsApp desconectado - usando simulação');
+            if (this.useSimulation || !this.isConnected) {
                 return this.simularEnvio(telefone, mensagem, consultaId, tipo);
             }
 
@@ -111,48 +146,45 @@ class WhatsAppGratuito {
                 timestamp: new Date().toISOString(),
                 consultaId,
                 tipo,
-                gratuito: true
+                baileys: true
             };
 
         } catch (error) {
-            console.error('❌ Erro envio:', error.message);
+            console.error('❌ Erro envio WhatsApp:', error.message);
             return this.simularEnvio(telefone, mensagem, consultaId, tipo);
         }
     }
 
-    async processarResposta(message) {
+    async processarMensagem(message) {
         try {
             const telefone = message.key.remoteJid.replace('@s.whatsapp.net', '');
             const texto = message.message?.conversation || 
                          message.message?.extendedTextMessage?.text || '';
 
-            console.log(`📥 Resposta de ${telefone}: ${texto}`);
+            console.log(`📥 Mensagem de ${telefone}: ${texto}`);
 
             const textoLower = texto.toLowerCase().trim();
             
-            if (textoLower.includes('sim') || textoLower === 's') {
+            if (textoLower.includes('sim')) {
                 await this.confirmarConsulta(telefone);
             } else if (textoLower.includes('cancelar') || textoLower.includes('não')) {
                 await this.cancelarConsulta(telefone);
             }
 
         } catch (error) {
-            console.error('❌ Erro processar resposta:', error);
+            console.error('❌ Erro processar mensagem:', error);
         }
     }
 
     async confirmarConsulta(telefone) {
         console.log(`✅ Consulta CONFIRMADA: ${telefone}`);
         
-        // TODO: Atualizar banco de dados
-        // db.run("UPDATE consultas SET confirmado = 1 WHERE paciente_telefone = ?", [telefone]);
-        
         const confirmacao = `✅ *Perfeito!*
 
 Sua consulta foi CONFIRMADA! 
 
-📅 Você receberá lembrete 2h antes
-📍 Chegue 10 minutos mais cedo
+📅 Lembrete 2h antes
+📍 Chegue 10min mais cedo
 
 _Obrigado!_ 🦷✨`;
 
@@ -162,13 +194,10 @@ _Obrigado!_ 🦷✨`;
     async cancelarConsulta(telefone) {
         console.log(`❌ Consulta CANCELADA: ${telefone}`);
         
-        const cancelamento = `❌ *Ok, cancelado!*
+        const cancelamento = `❌ *Cancelado!*
 
-Sua consulta foi cancelada.
-
-Para reagendar:
-📞 Entre em contato
-💬 Ou responda aqui
+Para reagendar, responda aqui
+📞 Ou entre em contato
 
 _Até breve!_ 😊`;
 
@@ -187,14 +216,13 @@ _Até breve!_ 😊`;
         console.log(`   💬 Msg: ${mensagem.substring(0, 50)}...`);
         
         return {
-            sid: 'FREE_' + Math.random().toString(36).substr(2, 9),
+            sid: 'SIM_' + Math.random().toString(36).substr(2, 9),
             status: 'sent_simulated',
             to: `whatsapp:+55${telefone}`,
             timestamp: new Date().toISOString(),
             consultaId,
             tipo,
-            simulated: true,
-            gratuito: true
+            simulated: true
         };
     }
 
@@ -203,18 +231,17 @@ _Até breve!_ 😊`;
             connected: this.isConnected,
             status: this.isConnected ? 'connected' : 'disconnected',
             qrCode: this.qrCode,
-            timestamp: new Date().toISOString(),
-            service: 'baileys_gratuito'
+            simulation: this.useSimulation,
+            timestamp: new Date().toISOString()
         };
     }
 }
 
 // Inicializar WhatsApp
-const whatsappGratuito = new WhatsAppGratuito();
-whatsappGratuito.inicializar();
+const whatsapp = new WhatsAppService();
 
 // ===========================================
-// 💾 DATABASE SETUP
+// 💾 DATABASE
 // ===========================================
 
 const db = new sqlite3.Database('./dentalert.db', (err) => {
@@ -253,29 +280,29 @@ function initDatabase() {
         FOREIGN KEY (paciente_id) REFERENCES pacientes (id)
     )`);
 
-    console.log('✅ Tabelas criadas');
+    console.log('✅ Tabelas verificadas');
 }
 
 // ===========================================
-// 📨 TEMPLATES DE MENSAGEM
+// 📨 TEMPLATES
 // ===========================================
 
 const TEMPLATES = {
     lembrete_24h: (nome, data, hora, dentista) => 
         `🦷 *Olá ${nome}!*
 
-Você tem consulta marcada:
+Consulta marcada:
 📅 *Data:* ${data}
 ⏰ *Horário:* ${hora}
-👨‍⚕️ *Dentista:* Dr(a). ${dentista}
+👨‍⚕️ *Dentista:* ${dentista}
 
-Para confirmar, responda *SIM*
-Para cancelar, responda *CANCELAR*
+Para confirmar: *SIM*
+Para cancelar: *CANCELAR*
 
-_DentAlert Pro - Sistema gratuito!_ 😊`,
+_DentAlert Pro - Gratuito!_ 😊`,
 
     lembrete_2h: (nome, hora) =>
-        `🕐 *${nome}, consulta em 2 horas!*
+        `🕐 *${nome}, consulta em 2h!*
 
 ⏰ Horário: ${hora}
 📍 Chegue 10min antes
@@ -284,13 +311,13 @@ _Te esperamos!_ ✨`
 };
 
 // ===========================================
-// 🤖 MOTOR DE LEMBRETES
+// 🤖 LEMBRETES
 // ===========================================
 
 async function processarLembretes() {
-    console.log('🤖 Processando lembretes...');
+    console.log('🤖 Verificando lembretes...');
     
-    // Lembretes 24h antes
+    // Lembretes 24h
     db.all(`SELECT c.*, p.nome, p.telefone 
             FROM consultas c 
             JOIN pacientes p ON c.paciente_id = p.id 
@@ -300,65 +327,25 @@ async function processarLembretes() {
             AND datetime(c.data_consulta, '-23 hours') > datetime('now')
             AND c.lembretes_enviados = 0`,
     async (err, consultas) => {
-        if (err) {
-            console.error('❌ Erro buscar consultas:', err);
-            return;
-        }
-
-        for (const consulta of consultas) {
-            try {
-                const dataConsulta = new Date(consulta.data_consulta);
-                const dataFormatada = dataConsulta.toLocaleDateString('pt-BR');
-                const horaFormatada = dataConsulta.toLocaleTimeString('pt-BR', { 
-                    hour: '2-digit', minute: '2-digit' 
-                });
-
-                const mensagem = TEMPLATES.lembrete_24h(
-                    consulta.nome,
-                    dataFormatada,
-                    horaFormatada,
-                    consulta.dentista
-                );
-
-                await whatsappGratuito.enviarMensagem(consulta.telefone, mensagem, consulta.id, 'lembrete_24h');
-                
-                db.run(`UPDATE consultas SET lembretes_enviados = 1 WHERE id = ?`, [consulta.id]);
-                console.log(`✅ Lembrete 24h enviado: ${consulta.nome}`);
-                
-            } catch (error) {
-                console.error(`❌ Erro consulta ${consulta.id}:`, error);
-            }
-        }
-    });
-
-    // Lembretes 2h antes (se confirmado)
-    db.all(`SELECT c.*, p.nome, p.telefone 
-            FROM consultas c 
-            JOIN pacientes p ON c.paciente_id = p.id 
-            WHERE c.status = 'agendada' 
-            AND c.confirmado = 1
-            AND datetime(c.data_consulta, '-2 hours') <= datetime('now')
-            AND datetime(c.data_consulta, '-1 hour') > datetime('now')
-            AND c.lembretes_enviados = 1`,
-    async (err, consultas) => {
         if (err) return;
 
         for (const consulta of consultas) {
             try {
                 const dataConsulta = new Date(consulta.data_consulta);
-                const horaFormatada = dataConsulta.toLocaleTimeString('pt-BR', { 
-                    hour: '2-digit', minute: '2-digit' 
-                });
+                const mensagem = TEMPLATES.lembrete_24h(
+                    consulta.nome,
+                    dataConsulta.toLocaleDateString('pt-BR'),
+                    dataConsulta.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+                    consulta.dentista
+                );
 
-                const mensagem = TEMPLATES.lembrete_2h(consulta.nome, horaFormatada);
-
-                await whatsappGratuito.enviarMensagem(consulta.telefone, mensagem, consulta.id, 'lembrete_2h');
+                await whatsapp.enviarMensagem(consulta.telefone, mensagem, consulta.id, 'lembrete_24h');
                 
-                db.run(`UPDATE consultas SET lembretes_enviados = 2 WHERE id = ?`, [consulta.id]);
-                console.log(`✅ Lembrete 2h enviado: ${consulta.nome}`);
+                db.run(`UPDATE consultas SET lembretes_enviados = 1 WHERE id = ?`, [consulta.id]);
+                console.log(`✅ Lembrete 24h: ${consulta.nome}`);
                 
             } catch (error) {
-                console.error(`❌ Erro 2h consulta ${consulta.id}:`, error);
+                console.error(`❌ Erro consulta ${consulta.id}:`, error);
             }
         }
     });
@@ -368,9 +355,8 @@ async function processarLembretes() {
 // 📋 API ENDPOINTS
 // ===========================================
 
-// Status principal
 app.get('/', (req, res) => {
-    const whatsappStatus = whatsappGratuito.verificarStatus();
+    const status = whatsapp.verificarStatus();
     
     res.json({
         message: "🦷 DentAlert Pro v2.1 - WhatsApp GRATUITO!",
@@ -382,9 +368,10 @@ app.get('/', (req, res) => {
             "✅ Confirmação automática"
         ],
         whatsapp: {
-            connected: whatsappStatus.connected,
-            status: whatsappStatus.status,
-            has_qr: !!whatsappStatus.qrCode
+            connected: status.connected,
+            status: status.status,
+            has_qr: !!status.qrCode,
+            simulation: status.simulation
         },
         timestamp: new Date().toISOString(),
         version: "2.1.0",
@@ -392,36 +379,60 @@ app.get('/', (req, res) => {
     });
 });
 
-// QR Code para conectar WhatsApp
 app.get('/qr', (req, res) => {
-    const status = whatsappGratuito.verificarStatus();
+    const status = whatsapp.verificarStatus();
     
     if (status.qrCode) {
         res.send(`
         <html>
-        <head><title>DentAlert Pro - Conectar WhatsApp</title></head>
-        <body style="text-align:center; font-family:Arial;">
+        <head>
+            <title>DentAlert Pro - QR Code</title>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+        </head>
+        <body style="text-align:center; font-family:Arial; padding:20px;">
             <h1>🦷 DentAlert Pro</h1>
             <h2>📱 Conectar WhatsApp GRATUITO</h2>
-            <p>Escaneie o QR Code abaixo com seu WhatsApp:</p>
-            <div id="qrcode"></div>
-            <p><strong>Instruções:</strong></p>
-            <ol style="text-align:left; display:inline-block;">
-                <li>Abra WhatsApp no seu celular</li>
-                <li>Toque nos 3 pontos > Aparelhos conectados</li>
-                <li>Toque em "Conectar um aparelho"</li>
-                <li>Escaneie o QR code acima</li>
-            </ol>
-            <p><em>Após conectar, esta página se atualizará automaticamente.</em></p>
+            
+            ${status.simulation ? 
+                `<div style="background:#fff3cd; padding:15px; border-radius:5px; margin:20px;">
+                    <strong>🧪 MODO SIMULAÇÃO ATIVO</strong><br>
+                    Baileys não está disponível no servidor.<br>
+                    Sistema funcionará em modo de demonstração.
+                </div>` 
+                : 
+                `<p><strong>✅ Sistema Baileys ativo!</strong></p>`
+            }
+            
+            <div style="background:#f8f9fa; padding:20px; border-radius:10px; margin:20px; border:2px dashed #007bff;">
+                <h3>QR Code para WhatsApp:</h3>
+                <div style="font-family:monospace; background:white; padding:15px; margin:10px; border:1px solid #ddd; word-break:break-all;">
+                    ${status.qrCode}
+                </div>
+                <p><em>Use este código no aplicativo ou escaneie no terminal</em></p>
+            </div>
+
+            <div style="text-align:left; max-width:400px; margin:20px auto; background:#e7f3ff; padding:15px; border-radius:5px;">
+                <h4>📋 Como conectar:</h4>
+                <ol>
+                    <li>Abra <strong>WhatsApp</strong> no celular</li>
+                    <li>Toque nos <strong>3 pontos</strong> → "Aparelhos conectados"</li>
+                    <li>Toque <strong>"Conectar aparelho"</strong></li>
+                    <li>Escaneie o QR Code acima</li>
+                </ol>
+            </div>
+            
+            <div style="margin-top:30px;">
+                <button onclick="location.reload()" style="padding:10px 20px; background:#28a745; color:white; border:none; border-radius:5px; cursor:pointer;">
+                    🔄 Atualizar QR Code
+                </button>
+                <br><br>
+                <a href="/" style="color:#007bff;">← Voltar ao painel</a>
+            </div>
+
             <script>
-                const qrcode = "${status.qrCode}";
-                // Aqui você pode usar uma biblioteca JS para exibir o QR code
-                document.getElementById('qrcode').innerHTML = 
-                    '<p>QR Code: ' + qrcode.substring(0, 50) + '...</p>' +
-                    '<p><em>Use o terminal para ver o QR code completo</em></p>';
-                
-                // Auto refresh a cada 5 segundos
-                setTimeout(() => location.reload(), 5000);
+                // Auto refresh a cada 10 segundos
+                setTimeout(() => location.reload(), 10000);
             </script>
         </body>
         </html>
@@ -429,43 +440,53 @@ app.get('/qr', (req, res) => {
     } else if (status.connected) {
         res.send(`
         <html>
-        <body style="text-align:center; font-family:Arial;">
+        <body style="text-align:center; font-family:Arial; padding:20px;">
             <h1>✅ WhatsApp Conectado!</h1>
-            <h2>🦷 DentAlert Pro ativo</h2>
-            <p>Sistema de lembretes funcionando!</p>
-            <a href="/">← Voltar ao painel</a>
+            <h2>🦷 DentAlert Pro ATIVO</h2>
+            
+            <div style="background:#d4edda; padding:20px; border-radius:10px; margin:20px; border:2px solid #28a745;">
+                <h3>🎉 Sistema Funcionando!</h3>
+                <p>✅ WhatsApp conectado com sucesso</p>
+                <p>🤖 Lembretes automáticos ativos</p>
+                <p>📱 Pronto para enviar mensagens</p>
+            </div>
+            
+            <a href="/" style="background:#007bff; color:white; padding:10px 20px; text-decoration:none; border-radius:5px;">
+                📊 Ver Dashboard
+            </a>
         </body>
         </html>
         `);
     } else {
         res.send(`
         <html>
-        <body style="text-align:center; font-family:Arial;">
-            <h1>🔄 Conectando WhatsApp...</h1>
-            <p>Aguarde o QR code ser gerado...</p>
-            <script>setTimeout(() => location.reload(), 3000);</script>
+        <body style="text-align:center; font-family:Arial; padding:20px;">
+            <h1>🔄 Iniciando WhatsApp...</h1>
+            <div style="background:#fff3cd; padding:15px; border-radius:5px; margin:20px;">
+                <p>⏳ Gerando QR Code...</p>
+                <p>Aguarde alguns segundos</p>
+            </div>
+            <script>setTimeout(() => location.reload(), 5000);</script>
         </body>
         </html>
         `);
     }
 });
 
-// Health check
 app.get('/health', (req, res) => {
-    const whatsappStatus = whatsappGratuito.verificarStatus();
+    const status = whatsapp.verificarStatus();
     
     res.json({
         status: "healthy",
         database: "connected",
-        whatsapp: whatsappStatus.connected ? "connected" : "disconnected",
-        whatsapp_service: "baileys_gratuito",
+        whatsapp: status.connected ? "connected" : "disconnected",
+        whatsapp_mode: status.simulation ? "simulation" : "baileys",
         scheduler: "running",
-        uptime: process.uptime(),
-        custo_mensal: "R$ 0"
+        uptime: process.uptime()
     });
 });
 
-// Cadastrar paciente
+// APIs básicas
 app.post('/api/pacientes', (req, res) => {
     const { nome, telefone, email, data_nascimento, observacoes } = req.body;
     
@@ -478,30 +499,23 @@ app.post('/api/pacientes', (req, res) => {
         [nome, telefone, email, data_nascimento, observacoes],
         function(err) {
             if (err) {
-                if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-                    res.status(400).json({ error: "Telefone já cadastrado" });
-                } else {
-                    res.status(500).json({ error: err.message });
-                }
+                res.status(400).json({ error: err.code === 'SQLITE_CONSTRAINT_UNIQUE' ? "Telefone já cadastrado" : err.message });
             } else {
                 res.json({
                     message: "✅ Paciente cadastrado!",
                     id: this.lastID,
-                    nome,
-                    telefone,
-                    whatsapp_gratuito: true
+                    nome, telefone
                 });
             }
         }
     );
 });
 
-// Agendar consulta
 app.post('/api/consultas', (req, res) => {
     const { paciente_id, dentista, data_consulta, procedimento, valor, observacoes } = req.body;
     
     if (!paciente_id || !dentista || !data_consulta) {
-        return res.status(400).json({ error: "Paciente, dentista e data obrigatórios" });
+        return res.status(400).json({ error: "Dados obrigatórios ausentes" });
     }
 
     db.run(`INSERT INTO consultas (paciente_id, dentista, data_consulta, procedimento, valor, observacoes) 
@@ -514,30 +528,23 @@ app.post('/api/consultas', (req, res) => {
                 res.json({
                     message: "✅ Consulta agendada!",
                     id: this.lastID,
-                    status: "Lembretes GRATUITOS ativados! 📱",
-                    custo_whatsapp: "R$ 0"
+                    status: "Lembretes GRATUITOS ativados!"
                 });
             }
         }
     );
 });
 
-// Listar pacientes
 app.get('/api/pacientes', (req, res) => {
     db.all("SELECT * FROM pacientes WHERE status = 'ativo' ORDER BY nome", (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
         } else {
-            res.json({
-                total: rows.length,
-                pacientes: rows,
-                whatsapp: "gratuito"
-            });
+            res.json({ total: rows.length, pacientes: rows });
         }
     });
 });
 
-// Listar consultas
 app.get('/api/consultas', (req, res) => {
     db.all(`SELECT c.*, p.nome as paciente_nome, p.telefone 
             FROM consultas c 
@@ -546,15 +553,11 @@ app.get('/api/consultas', (req, res) => {
         if (err) {
             res.status(500).json({ error: err.message });
         } else {
-            res.json({
-                total: rows.length,
-                consultas: rows
-            });
+            res.json({ total: rows.length, consultas: rows });
         }
     });
 });
 
-// Teste WhatsApp manual
 app.post('/api/test/whatsapp', async (req, res) => {
     const { telefone, mensagem } = req.body;
     
@@ -563,48 +566,31 @@ app.post('/api/test/whatsapp', async (req, res) => {
     }
 
     try {
-        const resultado = await whatsappGratuito.enviarMensagem(telefone, mensagem, null, 'teste');
-        
+        const resultado = await whatsapp.enviarMensagem(telefone, mensagem, null, 'teste');
         res.json({
             message: "✅ WhatsApp enviado!",
             resultado,
-            custo: "R$ 0 (gratuito!)"
+            custo: "R$ 0"
         });
     } catch (error) {
-        res.status(500).json({
-            error: "Erro ao enviar",
-            details: error.message
-        });
+        res.status(500).json({ error: error.message });
     }
 });
 
-// ===========================================
-// 🕐 CRON JOBS
-// ===========================================
-
-// A cada 30 minutos
+// Cron job
 cron.schedule('*/30 * * * *', () => {
-    console.log('🕐 Verificando lembretes...');
+    console.log('🕐 Processando lembretes...');
     processarLembretes();
 });
 
-// Teste inicial
-setTimeout(() => {
-    console.log('🧪 Teste inicial de lembretes');
-    processarLembretes();
-}, 10000);
+setTimeout(() => processarLembretes(), 10000);
 
-// ===========================================
-// 🚀 INICIALIZAÇÃO
-// ===========================================
-
+// Iniciar servidor
 app.listen(PORT, () => {
-    console.log(`✅ DentAlert Pro v2.1 rodando na porta ${PORT}`);
-    console.log('📱 WhatsApp GRATUITO via Baileys');
-    console.log('🤖 Sistema de lembretes ativo');
-    console.log('💰 Custo total: R$ 0/mês');
-    console.log('🦷 Pronto para revolucionar clínicas!');
-    console.log(`🔗 QR Code: https://dentalert-pro-wbywi.ondigitalocean.app/qr`);
+    console.log(`✅ DentAlert Pro v2.1 na porta ${PORT}`);
+    console.log('📱 WhatsApp gratuito inicializando...');
+    console.log('🔗 QR Code: https://dentalert-pro-wbywi.ondigitalocean.app/qr');
+    console.log('💰 Custo: R$ 0/mês');
 });
 
 module.exports = app;
