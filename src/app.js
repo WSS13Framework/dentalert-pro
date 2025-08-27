@@ -1,5 +1,7 @@
 const express = require('express');
 const bodyParser = require('body-parser');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -8,13 +10,17 @@ const PORT = process.env.PORT || 8080;
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Rota principal - TESTE BÁSICO
+console.log('🚀 Iniciando DentAlert Pro...');
+console.log('📁 Diretório atual:', process.cwd());
+
+// Rota principal 
 app.get('/', (req, res) => {
     res.json({
-        message: "🦷 Bem-vindo ao DentAlert Pro API!",
+        message: "🦷 DentAlert Pro API está funcionando!",
         status: "online",
         timestamp: new Date().toISOString(),
-        version: "1.0.0"
+        version: "1.0.0",
+        port: PORT
     });
 });
 
@@ -24,100 +30,106 @@ app.get('/health', (req, res) => {
         status: "healthy",
         uptime: process.uptime(),
         memory: process.memoryUsage(),
+        timestamp: new Date().toISOString(),
+        nodejs_version: process.version
+    });
+});
+
+// Debug - verificar estrutura
+app.get('/debug', (req, res) => {
+    try {
+        const currentDir = process.cwd();
+        const srcDir = path.join(currentDir, 'src');
+        
+        // Listar arquivos no diretório atual
+        let rootFiles = [];
+        try {
+            rootFiles = fs.readdirSync(currentDir);
+        } catch (e) {
+            rootFiles = ['Erro ao ler diretório root'];
+        }
+
+        // Verificar se existe pasta src
+        let srcFiles = [];
+        if (fs.existsSync(srcDir)) {
+            try {
+                srcFiles = fs.readdirSync(srcDir);
+            } catch (e) {
+                srcFiles = ['Erro ao ler pasta src'];
+            }
+        }
+
+        res.json({
+            message: "🔍 Debug - Estrutura de arquivos",
+            current_directory: currentDir,
+            root_files: rootFiles,
+            src_exists: fs.existsSync(srcDir),
+            src_files: srcFiles,
+            has_database_folder: fs.existsSync(path.join(currentDir, 'database')),
+            has_routes_folder: fs.existsSync(path.join(currentDir, 'routes')),
+            has_src_database: fs.existsSync(path.join(srcDir, 'database')),
+            has_src_routes: fs.existsSync(path.join(srcDir, 'routes'))
+        });
+    } catch (error) {
+        res.status(500).json({
+            error: "Erro no debug",
+            details: error.message,
+            stack: error.stack
+        });
+    }
+});
+
+// Rota de teste básica para pacientes (sem banco ainda)
+app.get('/api/pacientes', (req, res) => {
+    res.json({
+        message: "📋 Endpoint de pacientes funcionando!",
+        pacientes: [
+            { id: 1, nome: "Teste Paciente", telefone: "11999999999" }
+        ],
+        total: 1,
+        note: "Dados de teste - banco será conectado em breve"
+    });
+});
+
+// Rota para teste de POST
+app.post('/api/pacientes', (req, res) => {
+    res.json({
+        message: "✅ POST recebido com sucesso!",
+        dados_recebidos: req.body,
         timestamp: new Date().toISOString()
     });
 });
 
-// TESTE: Conexão com banco (com try/catch para evitar crash)
-let db = null;
-try {
-    db = require('./database/setup');
-    console.log('✅ Database setup carregado com sucesso');
-} catch (error) {
-    console.log('❌ Erro ao carregar database setup:', error.message);
-}
-
-// Rota para testar banco
-app.get('/test-db', (req, res) => {
-    if (!db) {
-        return res.status(500).json({ 
-            error: "Banco de dados não conectado",
-            message: "Verifique o arquivo ./database/setup.js"
-        });
-    }
-    
-    try {
-        db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='pacientes';", (err, row) => {
-            if (err) {
-                res.status(500).json({ 
-                    error: "Erro no banco", 
-                    details: err.message 
-                });
-            } else {
-                res.json({
-                    message: "✅ Banco de dados funcionando!",
-                    table_exists: !!row,
-                    table_name: row ? row.name : "Tabela 'pacientes' não existe ainda"
-                });
-            }
-        });
-    } catch (error) {
-        res.status(500).json({
-            error: "Erro ao executar query",
-            details: error.message
-        });
-    }
-});
-
-// TESTE: Carregar rotas de pacientes (com try/catch)
-try {
-    const pacientesRoutes = require('./routes/pacientes');
-    app.use('/api/pacientes', pacientesRoutes);
-    console.log('✅ Rotas de pacientes carregadas');
-} catch (error) {
-    console.log('❌ Erro ao carregar rotas de pacientes:', error.message);
-}
-
-// Rota para listar arquivos (debug)
-app.get('/debug', (req, res) => {
-    const fs = require('fs');
-    const path = require('path');
-    
-    try {
-        const srcFiles = fs.readdirSync('./');
-        const hasDatabase = fs.existsSync('./database');
-        const hasRoutes = fs.existsSync('./routes');
-        
-        res.json({
-            message: "Debug - Estrutura de arquivos",
-            current_directory: process.cwd(),
-            files_in_root: srcFiles,
-            has_database_folder: hasDatabase,
-            has_routes_folder: hasRoutes,
-            database_files: hasDatabase ? fs.readdirSync('./database') : "Pasta não existe",
-            routes_files: hasRoutes ? fs.readdirSync('./routes') : "Pasta não existe"
-        });
-    } catch (error) {
-        res.status(500).json({
-            error: "Erro ao listar arquivos",
-            details: error.message
-        });
-    }
-});
-
-// Middleware para rotas não encontradas
+// Middleware para 404
 app.use('*', (req, res) => {
     res.status(404).json({
-        error: "Rota não encontrada",
+        error: "❌ Rota não encontrada",
         path: req.originalUrl,
-        method: req.method
+        method: req.method,
+        available_routes: [
+            "GET /",
+            "GET /health", 
+            "GET /debug",
+            "GET /api/pacientes",
+            "POST /api/pacientes"
+        ]
     });
 });
 
-// Inicia o servidor
+// Error handler
+app.use((error, req, res, next) => {
+    console.error('❌ Erro na aplicação:', error);
+    res.status(500).json({
+        error: "Erro interno do servidor",
+        message: error.message
+    });
+});
+
+// Iniciar servidor
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor rodando na porta ${PORT}`);
-    console.log('📊 Conectado ao banco de dados DentAlert Pro.');
+    console.log(`✅ Servidor rodando na porta ${PORT}`);
+    console.log(`🌐 URL: https://dentalert-pro-wbywi.ondigitalocean.app/`);
+    console.log('🦷 DentAlert Pro API iniciado com sucesso!');
 });
 
 module.exports = app;
