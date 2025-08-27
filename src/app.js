@@ -14,7 +14,7 @@ const pacientesRoutes = require('./routes/pacientes');
 // const agendamentosRoutes = require('./routes/agendamentos');
 
 const app = express(); // Inicializa a aplicação Express
-const PORT = process.env.PORT || 8000; // <<< AQUI: AGORA USAMOS A PORTA 8000 >>>
+const PORT = process.env.PORT || 8080; // <<< AQUI: AGORA USAMOS A PORTA 8000 >>>
 
 // Middlewares
 app.use(bodyParser.json()); // Permite que a aplicação lide com requisições que têm corpo em JSON
