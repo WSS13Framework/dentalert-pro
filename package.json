@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/app.js", // <-- Esta linha foi adicionada e a vírgula é importante!
+    "test": "echo "Error: no test specified" && exit 1" // <-- Esta linha foi corrigida!
   },
   "keywords": [],
   "author": "",
